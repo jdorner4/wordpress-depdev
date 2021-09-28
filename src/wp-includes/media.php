@@ -4866,38 +4866,67 @@ function attachment_url_to_postid( $url ) {
 
 	$site_url   = parse_url( $dir['url'] );
 	$image_path = parse_url( $path );
+	$post_id = 0;
 
-	// Force the protocols to match if needed.
-	if ( isset( $image_path['scheme'] ) && ( $image_path['scheme'] !== $site_url['scheme'] ) ) {
-		$path = str_replace( $image_path['scheme'], $site_url['scheme'], $path );
-	}
+	if ( $attachment_id_pos = strpos( $url, '?attachment_id=' ) ) {
+		// "plain" url (permalinks not enabled)
+		$starting_pos = $attachment_id_pos + 15; // 15 = length of "?attachment_id="
+		$post_id = substr( $url, $starting_pos );
+	} elseif ( $attachment_id = url_to_postid( $url ) ) {
+		// this is an attachment permalink
+		$post_id = $attachment_id;
+	} else {
+		// compensate for sizes
+		// reduce path to original filename
+		$path_parts = explode( '-', $image_path['path'] );
+		$filename = end( $path_parts );
+		$found = preg_match('/^[\d]+x[\d]+(\.[0-9a-zA-Z]{3,4})/', $filename, $matches );
+		if ( $found ) {
+			// size found
+			$meta_values[] = str_replace( '-' . $matches[0], $matches[1], $path );
+			$meta_values[] = str_replace( '-' . $matches[0], '-scaled'. $matches[1], $path );
+		} else {
+			// no size found
+			$meta_values[] = $path;
+			$extension = '.'. pathinfo( $path, PATHINFO_EXTENSION );
+			$meta_values[] = str_replace( $extension, '-scaled'. $extension, $path );
+		}
 
-	if ( 0 === strpos( $path, $dir['baseurl'] . '/' ) ) {
-		$path = substr( $path, strlen( $dir['baseurl'] . '/' ) );
-	}
+		foreach( $meta_values as $key => $value ) {
+			// Force the protocols to match if needed.
+			if ( isset( $image_path['scheme'] ) && ( $image_path['scheme'] !== $site_url['scheme'] ) ) {
+				$meta_values[ $key ] = str_replace( $image_path['scheme'], $site_url['scheme'], $meta_values[ $key ] );
+			}
+			// remove baseurl from path
+			if ( 0 === strpos( $meta_values[ $key ], $dir['baseurl'] . '/' ) ) {
+				$meta_values[ $key ] = substr( $meta_values[ $key ], strlen( $dir['baseurl'] . '/' ) );
+			}
+		}
 
-	$sql = $wpdb->prepare(
-		"SELECT post_id, meta_value FROM $wpdb->postmeta WHERE meta_key = '_wp_attached_file' AND meta_value = %s",
-		$path
-	);
+		$sql = 'SELECT `post_id`, `meta_value` FROM '. $wpdb->postmeta .' WHERE meta_key = "_wp_attached_file" AND ( `meta_value` = %s';
+		if( isset( $meta_values[1] ) ) {
+			// handle "-scaled" images
+			$sql .= ' OR `meta_value` = %s';
+		}
+		$sql .= ')';
+		$sql = $wpdb->prepare( $sql, $meta_values );
+		$results = $wpdb->get_results( $sql );
 
-	$results = $wpdb->get_results( $sql );
-	$post_id = null;
+		if ( $results ) {
+			// Use the first available result, but prefer a case-sensitive match, if exists.
+			$post_id = reset( $results )->post_id;
 
-	if ( $results ) {
-		// Use the first available result, but prefer a case-sensitive match, if exists.
-		$post_id = reset( $results )->post_id;
-
-		if ( count( $results ) > 1 ) {
-			foreach ( $results as $result ) {
-				if ( $path === $result->meta_value ) {
-					$post_id = $result->post_id;
-					break;
+			if ( count( $results ) > 1 ) {
+				foreach ( $results as $result ) {
+					if( in_array( $result->meta_value, $meta_values) ) {
+						$post_id = $result->post_id;
+						break;
+					}
 				}
 			}
 		}
-	}
 
+	}
 	/**
 	 * Filters an attachment ID found by URL.
 	 *
